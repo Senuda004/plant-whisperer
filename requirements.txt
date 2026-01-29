@@ -1,0 +1,8 @@
+streamlit
+tensorflow
+numpy
+Pillow
+google-generativeai
+rembg
+huggingface-hub
+pandas
