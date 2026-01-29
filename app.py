@@ -1,6 +1,6 @@
 """
-Plant Whisperer - Streamlit App
-AI-powered plant health diagnosis with species detection and background removal
+Plant Whisperer - Streamlit App (Optimized for Cloud)
+AI-powered plant health diagnosis with background removal
 """
 
 import streamlit as st
@@ -8,12 +8,21 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 import io
-import google.generativeai as genai
+try:
+    import google.genai as genai
+    GENAI_NEW = True
+except ImportError:
+    try:
+        import google.generativeai as genai
+        GENAI_NEW = False
+    except ImportError:
+        genai = None
 from datetime import datetime
 import os
 from rembg import remove
 from huggingface_hub import hf_hub_download
 import json
+import sys
 
 # ==================== PAGE CONFIGURATION ====================
 
@@ -23,6 +32,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Print Python and TensorFlow info for debugging
+print(f"Python version: {sys.version}")
+print(f"TensorFlow version: {tf.__version__}")
 
 # ==================== CUSTOM CSS ====================
 
@@ -36,34 +49,6 @@ st.markdown("""
         border-radius: 10px;
         margin-bottom: 2rem;
     }
-    .diagnosis-card {
-        padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin: 1rem 0;
-    }
-    .healthy-card {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        color: white;
-    }
-    .warning-card {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        color: white;
-    }
-    .info-box {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #667eea;
-        margin: 1rem 0;
-    }
-    .metric-card {
-        text-align: center;
-        padding: 1rem;
-        background: white;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
     .stButton>button {
         width: 100%;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -73,24 +58,22 @@ st.markdown("""
         border-radius: 8px;
         font-weight: bold;
     }
-    .stButton>button:hover {
-        background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==================== CONFIGURATION ====================
 
-# Class names
 CLASS_NAMES = ["healthy", "high_light", "low_light", "under_water"]
-
-# Image preprocessing config
 IMG_SIZE = (224, 224)
+MODEL_REPO = "Senuda2004/plant-whisperer-keras"
+MODEL_FILENAME = "plant_whisperer_final.keras"
 
-# Gemini API configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY and genai:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+    except:
+        pass
 
 # ==================== TREATMENT DATA ====================
 
@@ -153,62 +136,70 @@ TREATMENTS = {
     }
 }
 
-# ==================== HELPER FUNCTIONS ====================
+# ==================== MODEL FUNCTIONS ====================
 
-@st.cache_resource
-def download_model_from_hf():
-    """Download model from Hugging Face"""
-    model_filename = "plant_whisperer_final.keras"
-    
-    if os.path.exists(model_filename):
-        return model_filename
-    
+@st.cache_resource(show_spinner=False)
+def download_and_load_model():
+    """Download and load model in one step"""
     try:
-        with st.spinner("📥 Downloading model from Hugging Face..."):
-            downloaded_path = hf_hub_download(
-                repo_id="Senuda2004/plant-whisperer-keras",
-                filename=model_filename,
-                local_dir=".",
-                local_dir_use_symlinks=False
-            )
-        return downloaded_path
-    except Exception as e:
-        st.error(f"❌ Error downloading model: {e}")
-        raise
-
-
-@st.cache_resource
-def load_model():
-    """Load the trained Keras model"""
-    try:
-        model_path = download_model_from_hf()
-        model = tf.keras.models.load_model(model_path)
+        print(f"\n{'='*60}")
+        print("🚀 MODEL LOADING PROCESS STARTED")
+        print(f"{'='*60}")
+        
+        # Check if model already exists locally
+        if os.path.exists(MODEL_FILENAME):
+            print(f"✓ Found local model: {MODEL_FILENAME}")
+            print("📂 Loading model from local file...")
+            model = tf.keras.models.load_model(MODEL_FILENAME, compile=False)
+            print("✓ Model loaded successfully!")
+            return model
+        
+        # Download from Hugging Face
+        print(f"📥 Downloading model from Hugging Face...")
+        print(f"   Repository: {MODEL_REPO}")
+        print(f"   File: {MODEL_FILENAME}")
+        print(f"   Size: ~85MB (this may take 1-3 minutes)...")
+        
+        model_path = hf_hub_download(
+            repo_id=MODEL_REPO,
+            filename=MODEL_FILENAME,
+            cache_dir="./model_cache",
+            local_dir_use_symlinks=False,
+            resume_download=True
+        )
+        
+        print(f"✓ Download complete: {model_path}")
+        print("📂 Loading model into memory...")
+        
+        # Load the model
+        model = tf.keras.models.load_model(model_path, compile=False)
+        
+        print(f"✓ Model loaded successfully!")
+        print(f"   Input shape: {model.input_shape}")
+        print(f"   Output shape: {model.output_shape}")
+        print(f"{'='*60}\n")
+        
         return model
+        
     except Exception as e:
-        st.error(f"❌ Error loading model: {e}")
+        print(f"\n{'='*60}")
+        print(f"✗ MODEL LOADING FAILED")
+        print(f"{'='*60}")
+        print(f"Error: {str(e)}")
+        print(f"{'='*60}\n")
         return None
 
 
+# ==================== HELPER FUNCTIONS ====================
+
 def remove_background(image: Image.Image) -> Image.Image:
-    """
-    Remove background from image using rembg
-    
-    Args:
-        image: PIL Image
-        
-    Returns:
-        PIL Image with background removed
-    """
+    """Remove background from image using rembg"""
     try:
-        # Convert image to bytes
         img_byte_arr = io.BytesIO()
         image.save(img_byte_arr, format='PNG')
         img_byte_arr = img_byte_arr.getvalue()
         
-        # Remove background
         output = remove(img_byte_arr)
-        
-        # Convert back to PIL Image
         result_image = Image.open(io.BytesIO(output))
         
         return result_image
@@ -218,29 +209,13 @@ def remove_background(image: Image.Image) -> Image.Image:
 
 
 def preprocess_image(image: Image.Image) -> np.ndarray:
-    """
-    Preprocess image for model inference
-    
-    Args:
-        image: PIL Image
-        
-    Returns:
-        Preprocessed image array
-    """
-    # Convert to RGB if needed
+    """Preprocess image for model inference"""
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
-    # Resize to model input size
     image = image.resize(IMG_SIZE)
-    
-    # Convert to array
     img_array = np.array(image)
-    
-    # Add batch dimension
     img_array = np.expand_dims(img_array, axis=0)
-    
-    # ResNet50 preprocessing
     img_array = tf.keras.applications.resnet50.preprocess_input(img_array)
     
     return img_array
@@ -272,19 +247,11 @@ def calculate_severity(confidence: float) -> dict:
 
 
 def detect_plant_species(image: Image.Image) -> dict:
-    """
-    Use Gemini to detect plant species from image
-    
-    Args:
-        image: PIL Image
-        
-    Returns:
-        Dictionary with plant species information
-    """
-    if not GEMINI_API_KEY:
+    """Use Gemini to detect plant species"""
+    if not GEMINI_API_KEY or not genai:
         return {
             "species_name": "Unknown",
-            "common_name": "Plant species detection unavailable",
+            "common_name": "Species detection unavailable",
             "confidence": 0.0,
             "plant_family": "N/A",
             "care_level": "N/A"
@@ -296,15 +263,13 @@ def detect_plant_species(image: Image.Image) -> dict:
         prompt = """
         Identify this houseplant species. Provide a JSON response with:
         {
-            "species_name": "Scientific name (e.g., Monstera deliciosa)",
-            "common_name": "Common name (e.g., Swiss Cheese Plant)",
-            "plant_family": "Family name (e.g., Araceae)",
+            "species_name": "Scientific name",
+            "common_name": "Common name",
+            "plant_family": "Family name",
             "care_level": "Easy/Moderate/Difficult",
             "confidence": 0.0-1.0
         }
-        
-        Focus on common indoor houseplants. If uncertain, provide best guess with lower confidence.
-        Only return the JSON, no other text.
+        Only return JSON, no other text.
         """
         
         response = model_gemini.generate_content([prompt, image])
@@ -334,12 +299,47 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Load model
-    model = load_model()
+    # Show loading progress
+    progress_placeholder = st.empty()
+    
+    with progress_placeholder.container():
+        st.info("🔄 **Loading AI model...** This takes 1-3 minutes on first run, then it's instant!")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        status_text.text("Initializing...")
+        progress_bar.progress(20)
+        
+        model = download_and_load_model()
+        
+        progress_bar.progress(100)
+        status_text.text("Model loaded!")
+    
+    # Clear progress indicators
+    progress_placeholder.empty()
     
     if model is None:
-        st.error("❌ Failed to load model. Please check the console for errors.")
+        st.error("❌ **Failed to load model**")
+        st.info("""
+        **What happened?**
+        - Model download from Hugging Face may have timed out
+        - Network connection issue
+        
+        **What to do:**
+        1. **Refresh the page** (press F5 or reload button)
+        2. Wait 30 seconds and try again
+        3. If problem persists, check [Hugging Face Status](https://status.huggingface.co/)
+        
+        The model is ~85MB and downloads on first run only.
+        """)
+        
+        if st.button("🔄 Try Loading Model Again"):
+            st.rerun()
+        
         return
+    
+    # Success message
+    st.success("✅ **Model ready!** Upload a plant image to get started.")
     
     # Sidebar
     with st.sidebar:
@@ -353,8 +353,8 @@ def main():
         
         detect_species = st.checkbox(
             "Detect Plant Species",
-            value=bool(GEMINI_API_KEY),
-            disabled=not bool(GEMINI_API_KEY),
+            value=bool(GEMINI_API_KEY and genai),
+            disabled=not bool(GEMINI_API_KEY and genai),
             help="Use Gemini AI to identify plant species (requires API key)"
         )
         
@@ -362,23 +362,15 @@ def main():
         
         st.subheader("📊 About")
         st.info("""
-        **Plant Whisperer** uses AI to diagnose common plant health issues:
+        **Plant Whisperer** diagnoses:
         
         - 🚰 Under-watering
         - 💡 Low light
         - ☀️ High light
         - ✅ Healthy plants
         
-        Upload a clear photo of your plant leaves for best results!
+        Upload a clear photo of plant leaves for best results!
         """)
-        
-        st.divider()
-        
-        st.subheader("🔑 API Status")
-        if GEMINI_API_KEY:
-            st.success("✅ Gemini API: Enabled")
-        else:
-            st.warning("⚠️ Gemini API: Disabled\n\nSet GEMINI_API_KEY environment variable to enable species detection.")
     
     # Main content
     col1, col2 = st.columns([1, 1])
@@ -393,13 +385,9 @@ def main():
         )
         
         if uploaded_file is not None:
-            # Load image
             image = Image.open(uploaded_file)
-            
-            # Display original image
             st.image(image, caption="Original Image", use_container_width=True)
             
-            # Process image
             if remove_bg:
                 with st.spinner("🎨 Removing background..."):
                     processed_image = remove_background(image)
@@ -413,10 +401,10 @@ def main():
             
             if st.button("🌱 Diagnose Plant Health", type="primary"):
                 with st.spinner("🤖 Analyzing plant health..."):
-                    # Preprocess for model
+                    # Preprocess
                     img_array = preprocess_image(processed_image)
                     
-                    # Get prediction
+                    # Predict
                     predictions = model.predict(img_array, verbose=0)
                     
                     # Get results
@@ -430,7 +418,7 @@ def main():
                     # Get treatment
                     treatment = TREATMENTS[predicted_class]
                     
-                    # Store in session state
+                    # Store results
                     st.session_state.diagnosis = {
                         "predicted_class": predicted_class,
                         "confidence": confidence,
@@ -448,11 +436,9 @@ def main():
     # Display results
     if hasattr(st.session_state, 'diagnosis'):
         st.divider()
+        st.subheader("📋 Diagnosis Results")
         
         diagnosis = st.session_state.diagnosis
-        
-        # Results header
-        st.subheader("📋 Diagnosis Results")
         
         # Species info (if available)
         if hasattr(st.session_state, 'species') and st.session_state.species:
@@ -469,8 +455,6 @@ def main():
                 
                 with col3:
                     st.metric("Care Level", species.get("care_level", "N/A"))
-                
-                st.caption(f"Family: {species.get('plant_family', 'N/A')} | Confidence: {species.get('confidence', 0):.1%}")
         
         # Health diagnosis
         predicted_class = diagnosis["predicted_class"]
@@ -478,7 +462,6 @@ def main():
         severity = diagnosis["severity"]
         treatment = diagnosis["treatment"]
         
-        # Metrics row
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -497,7 +480,6 @@ def main():
         
         # Treatment recommendations
         st.subheader(treatment["title"])
-        
         st.markdown(f"**{treatment['description']}**")
         
         col1, col2 = st.columns(2)
@@ -508,9 +490,6 @@ def main():
             
             st.markdown("### 🔄 Ongoing Care")
             st.info(treatment["ongoing_care"])
-            
-            st.markdown("### ⏰ Frequency")
-            st.info(treatment["frequency"])
         
         with col2:
             st.markdown("### ⏱️ Recovery Time")
@@ -519,29 +498,22 @@ def main():
             st.markdown("### 🛡️ Prevention Tips")
             for tip in treatment["prevention"]:
                 st.markdown(f"- {tip}")
-            
-            st.markdown("### ⚠️ Warning Signs")
-            st.warning(treatment["warning_signs"])
         
         # All predictions
         with st.expander("📊 Detailed Prediction Scores"):
+            import pandas as pd
+            
             predictions_data = {
                 CLASS_NAMES[i]: float(diagnosis["predictions"][i])
                 for i in range(len(CLASS_NAMES))
             }
             
-            # Create bar chart
-            import pandas as pd
             df = pd.DataFrame({
                 "Condition": [name.replace("_", " ").title() for name in predictions_data.keys()],
                 "Probability": list(predictions_data.values())
             })
             
             st.bar_chart(df.set_index("Condition"))
-            
-            # Show raw scores
-            for condition, score in predictions_data.items():
-                st.write(f"**{condition.replace('_', ' ').title()}:** {score:.2%}")
 
 
 if __name__ == "__main__":
